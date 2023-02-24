@@ -12,13 +12,13 @@ class Student:
         if all_marks == []:
             return f'Имя: {self.name}' + '\n' + f'Фамилия: {self.surname}' + '\n'\
                 + f'Нет оценок за дз'  + '\n'\
-                    + f'Курсы в процессе изучения: {list(self.grades.keys())}' + '\n'\
-                        +f'Завершенные курсы: {self.finished_courses}'
+                    + f'Курсы в процессе изучения: {", ".join(list(self.grades.keys()))}' + '\n'\
+                        +f'Завершенные курсы: {", ".join(self.finished_courses)}'
         else:
             return f'Имя: {self.name}' + '\n' + f'Фамилия: {self.surname}' + '\n'\
                 + f'Средняя оценка за дз: {round(sum(all_marks) / len(all_marks), 2)}'  + '\n'\
-                    + f'Курсы в процессе изучения: {list(self.grades.keys())}' + '\n'\
-                        +f'Завершенные курсы: {self.finished_courses}'
+                    + f'Курсы в процессе изучения: {", ".join(list(self.grades.keys()))}' + '\n'\
+                        +f'Завершенные курсы: {", ".join(self.finished_courses)}'
 
     def __lt__(self, other):
         if not isinstance(other, Student):
