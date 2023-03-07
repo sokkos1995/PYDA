@@ -1,8 +1,8 @@
 import requests
 
 class YandexApi:
-    def __init__(self):
-        self.token = 'y0_AgAAAABpEgt_AADLWwAAAADdwuBDESFUKa62RBGb8k_mjk--nsvgz-o'
+    def __init__(self, token):
+        self.token = token  
         self.headers = {
                 'Content-Type': 'application/json',
                 'Authorization': 'OAuth {}'.format(self.token)
@@ -29,8 +29,9 @@ class YandexApi:
         """ 
         Takes path for storing file in YandexDisk and stores a file there
         """
-        href = self._get_upload_link(disk_file_path=disk_file_path).get("href", "")
-        response = requests.put(href, data=open(filename, 'rb'))
+        with open(filename, 'rb') as data:
+            href = self._get_upload_link(disk_file_path=disk_file_path).get("href", "")
+            response = requests.put(href, data=data)
         response.raise_for_status()
         if response.status_code == 201:
             print("Success")

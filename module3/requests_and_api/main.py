@@ -8,7 +8,8 @@ c = task1.SuperheroesApi()
 print(c.get_max_parametr('intelligence'))
 
 print("Задание 2")
-c = task2.YandexApi()
+token = ''
+c = task2.YandexApi(token)
 print(*c.get_files_list(), sep='\n')
 path = os.path.dirname(__file__) + '/photo1.png'
 c.upload_file_to_disk("netology/test", path)
