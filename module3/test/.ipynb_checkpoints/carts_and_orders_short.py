@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import logging
+import pandas as pd
 from vconnector.vertica_connector import VerticaConnector
 # from user import user
 
@@ -11,7 +12,15 @@ logging.captureWarnings(True)
 
 SCHEMA = "netology_mart"
 STAGING_SCHEMA = "netology_staging"
-TABLE_NAME = "carts_and_orders_short" #os.getenv("table_name")
+TABLE_NAME = "carts_and_orders_short_v2" #os.getenv("table_name")
+
+
+os.environ['VERTICA_CONFIGS'] = '{     \"backup_server_node\": [       \"vertica-db-1.topmind.io\",       \"vertica-db-2.topmind.io\",       \"vertica-db-3.topmind.io\"     ],     \"host\": \"vertica-db-1.topmind.io\",     \"port\": 5433   }'
+os.environ['VERTICA_DATABASE'] = 'DWH'
+os.environ['VERTICA_HOST'] = 'vertica-db-1.topmind.io'
+os.environ['VERTICA_PORT'] = '5433'
+os.environ['VERTICA_WRITE_PASSWORD'] = 'nk43abn5asvHH'
+os.environ['VERTICA_WRITE_USER'] = 'netology_analytics' 
 
 SQL_C1 ="""
 /* Без отдельных выплат по рассрочкам 1 часть. Продукты*/
@@ -38,67 +47,71 @@ UNSEGMENTED ALL NODES;
 SQL_C2 = """
 /* 2 часть. Рассрочки - все данные сводим к первому заказу */
 INSERT INTO temp_carts_prep
-    SELECT f.cart_item_id  AS                                  cart_item_id, -- первый cart_item для рассрочки
-           i.resource_type,
-           i.resource_id,
-           ci.student_id   AS                                  student_id,
-           i.source_amount AS                                  source_price,
-           i.amount        AS                                  price,
-           CASE WHEN i.paid_amount != 0 THEN i.paid_amount END paid_amount,  --чтобы соответсвовало логике продуктов, иначе вместо NULL будет 0
-           f.cart_id       AS                                  cart_id,      -- первый cart для рассрочки
-           ci.created_at,
-           'installments'  AS                                  from_table,
-           i.id            AS                                  from_table_id,
-           carts.tags      AS                                  tags,
-           CASE WHEN regexp_like(tags, 'b2c2b') THEN 1 ELSE 0 END AS b2c2b
-    FROM netology_mysql.installments i
-             JOIN (
-        /* Первый заказ по рассрочке
-         Есть ли в рассрочке не отмененные корзины?
-         если есть, то берем первую не fail*/
-        SELECT i.id,
-               MIN(ci.id)      AS cart_item_id,
-               MIN(ci.cart_id) AS cart_id
-        FROM netology_mysql.cart_items ci
-                 JOIN netology_mysql.installment_parts ip
-                      ON ci.resource_id = ip.id AND ci.resource_type = 'InstallmentPart'
-                 JOIN netology_mysql.installments i ON ip.installment_id = i.id
-                 JOIN netology_mysql.carts ON carts.id = ci.cart_id
-        WHERE ci.resource_type = 'InstallmentPart'
-          AND ip.state != 'removed'
-          AND carts.state != 'fail'
-        GROUP BY i.id
-        UNION ALL
-        /* если нет, то просто первую (not_failed = 0)*/
-        SELECT i.id,
-               MIN(ci.id)      AS cart_item_id,
-               MIN(ci.cart_id) AS cart_id
-        FROM netology_mysql.cart_items ci
-                 JOIN netology_mysql.installment_parts ip
-                      ON ci.resource_id = ip.id AND ci.resource_type = 'InstallmentPart'
-                 JOIN netology_mysql.installments i ON ip.installment_id = i.id
-                 JOIN netology_mysql.carts ON carts.id = ci.cart_id
-        WHERE ci.resource_type = 'InstallmentPart'
-          AND ip.state != 'removed'
-          AND i.id IN (
-            SELECT id
-            FROM (SELECT i.id,
-                         SUM(CASE WHEN carts.state != 'fail' THEN 1 ELSE 0 END) AS not_failed
-                  FROM netology_mysql.cart_items ci
-                           JOIN netology_mysql.installment_parts ip ON ci.resource_id = ip.id AND
-                                                                       ci.resource_type = 'InstallmentPart'
-                           JOIN netology_mysql.installments i ON ip.installment_id = i.id
-                           JOIN netology_mysql.carts ON carts.id = ci.cart_id
-                  WHERE ci.resource_type = 'InstallmentPart'
+    SELECT
+            CASE WHEN i.first_paid_cart_id > 0 THEN ci1.id ELSE f.cart_item_id END AS cart_item_id, -- первый cart_item для рассрочки
+            i.resource_type,
+            i.resource_id,
+            CASE WHEN i.first_paid_cart_id > 0 THEN ci1.student_id ELSE ci2.student_id END AS student_id,
+            i.source_amount AS source_price,
+            i.amount AS price,
+            CASE WHEN i.paid_amount != 0 THEN i.paid_amount END AS paid_amount,  -- чтобы соответствовало логике продуктов, иначе вместо NULL будет 0
+            CASE WHEN i.first_paid_cart_id > 0 THEN i.first_paid_cart_id ELSE f.cart_id END AS cart_id, /*первый cart для рассрочки
+                                                                                                            (обойти случай first_paid_cart_id = 0,
+                                                                                                            если есть first_paid_cart_id > 0 - тогда берем first_paid_cart_id,
+                                                                                                            иначе cart_id из подзапроса f)*/
+            CASE WHEN i.first_paid_cart_id > 0 THEN ci1.created_at ELSE ci2.created_at END AS created_at,
+            'installments' AS from_table,
+            i.id AS from_table_id,
+            COALESCE(c1.tags, c2.tags) AS tags,
+            CASE WHEN regexp_like(COALESCE(c1.tags, c2.tags), 'b2c2b') THEN 1 ELSE 0 END AS b2c2b
+    FROM netology_mysql.installments AS i
+    JOIN (
+            /* Первый заказ по рассрочке
+            Есть ли в рассрочке не отмененные корзины?
+            если есть, то берем первую не fail*/
+            SELECT i.id,
+                MIN(ci.id) AS cart_item_id,
+                MIN(ci.cart_id) AS cart_id
+            FROM netology_mysql.cart_items ci
+            JOIN netology_mysql.installment_parts ip ON ci.resource_id = ip.id AND ci.resource_type = 'InstallmentPart'
+            JOIN netology_mysql.installments i ON ip.installment_id = i.id
+            JOIN netology_mysql.carts ON carts.id = ci.cart_id
+            WHERE ci.resource_type = 'InstallmentPart'
                     AND ip.state != 'removed'
-                  GROUP BY i.id
-                 ) t
-            WHERE not_failed = 0
-        )
-        GROUP BY i.id
-    ) AS f ON i.id = f.id
-             JOIN netology_mysql.cart_items ci ON f.cart_item_id = ci.id
-             JOIN netology_mysql.carts ON ci.cart_id = carts.id
+                    AND carts.state != 'fail'
+            GROUP BY i.id
+            UNION ALL
+            /* если нет, то просто первую (not_failed = 0)*/
+            SELECT i.id,
+                MIN(ci.id) AS cart_item_id,
+                MIN(ci.cart_id) AS cart_id
+            FROM netology_mysql.cart_items ci
+            JOIN netology_mysql.installment_parts ip ON ci.resource_id = ip.id AND ci.resource_type = 'InstallmentPart'
+            JOIN netology_mysql.installments i ON ip.installment_id = i.id
+            JOIN netology_mysql.carts ON carts.id = ci.cart_id
+            WHERE ci.resource_type = 'InstallmentPart'
+                    AND ip.state != 'removed'
+                    AND i.id IN (
+                                SELECT id
+                                FROM (SELECT i.id,
+                                            SUM(CASE WHEN carts.state != 'fail' THEN 1 ELSE 0 END) AS not_failed
+                                    FROM netology_mysql.cart_items ci
+                                    JOIN netology_mysql.installment_parts ip ON ci.resource_id = ip.id AND
+                                                                        ci.resource_type = 'InstallmentPart'
+                                    JOIN netology_mysql.installments i ON ip.installment_id = i.id
+                                    JOIN netology_mysql.carts ON carts.id = ci.cart_id
+                                    WHERE ci.resource_type = 'InstallmentPart'
+                                            AND ip.state != 'removed'
+                                    GROUP BY i.id
+                                    ) t
+                                WHERE not_failed = 0
+                                )
+            GROUP BY i.id
+        ) AS f ON i.id = f.id
+    LEFT JOIN netology_mysql.carts AS c1 ON c1.id = i.first_paid_cart_id and i.first_paid_cart_id > 0 -- данные по first_paid_cart_id (если есть first_paid_cart_id > 0)
+    LEFT JOIN netology_mysql.cart_items AS ci1 ON ci1.cart_id = i.first_paid_cart_id and i.first_paid_cart_id > 0 -- cart_item для first_paid_cart_id
+    LEFT JOIN netology_mysql.carts AS c2 ON c2.id = f.cart_id -- данные по первому cart в рассрочке
+    LEFT JOIN netology_mysql.cart_items AS ci2 ON ci2.id = f.cart_item_id
 ;
 """
 
@@ -192,11 +205,7 @@ CREATE LOCAL TEMPORARY TABLE temp_carts_0 ON COMMIT PRESERVE ROWS AS
                case
                    when tsd_cart.utm_source in
                         ('fb', 'vk', 'dzen', 'tiktok', 'facebook', 'mt', 'fb_wh', 'twitter', 'vc', 'linkedin',
-                         'mytarget', 'instagram','vkontakte','vkads') or 
-                        ((tsd_cart.utm_campaign='brand_all_bou_tg_target_db_chatbot' or
-                          tsd_cart.utm_campaign='brand_all_bou_tg_target_db_chatbot_atlas')
-                         and tsd_cart.utm_source = 'tg')
-                   then 'cpc_target'
+                         'mytarget', 'instagram','vkontakte','vkads') then 'cpc_target'
                    else 'cpc_context' end
            else tsd_cart.channel end                                as channel,
 	       tsd_cart.utm_campaign                                    AS "utm_campaign",
@@ -248,11 +257,7 @@ select c.* ,
                case
                    when tsd_cart.utm_source in
                         ('fb', 'vk', 'dzen', 'tiktok', 'facebook', 'mt', 'fb_wh', 'twitter', 'vc', 'linkedin',
-                         'mytarget', 'instagram','vkontakte','vkads')  or 
-                        ((tsd_cart.utm_campaign='brand_all_bou_tg_target_db_chatbot' or
-                          tsd_cart.utm_campaign='brand_all_bou_tg_target_db_chatbot_atlas')
-                         and tsd_cart.utm_source = 'tg')
-                   then 'cpc_target'
+                         'mytarget', 'instagram','vkontakte','vkads') then 'cpc_target'
                    else 'cpc_context' end
            else tsd_cart.channel end                                as channel,
 	       tsd_cart.utm_campaign                                    AS "utm_campaign",
@@ -322,7 +327,7 @@ SELECT ANALYZE_STATISTICS ('temp_carts')
 SQL_C7 = """
 /* Сбор продаж и чистых продаж из оплат */
 
-CREATE LOCAL TEMPORARY TABLE temp_carts_real_sales ON COMMIT PRESERVE ROWS AS
+CREATE TABLE netology_temp.temp_carts_real_sales AS
 WITH payment_transactions AS (
 			SELECT id AS pt_id,
 					resource_id AS cart_id,
@@ -430,14 +435,12 @@ LEFT JOIN real_amounts AS ra ON ra.cart_items_id = c.cart_items_id
 -- первая успешная транзакция по оплате заказа installments
 LEFT JOIN real_amounts_installments AS rai ON rai.cart_id = c.cart_id
 										  AND c.from_table = 'installments'
-UNSEGMENTED ALL NODES;
-SELECT ANALYZE_STATISTICS ('temp_carts_real_sales')
 ;
 """
 
 SQL_C8 = """
 /* Сбор данных по заявкам */
-CREATE LOCAL TEMPORARY TABLE temp_orders ON COMMIT PRESERVE ROWS AS
+CREATE TABLE netology_temp.temp_orders AS
 SELECT 'orders'                                                   AS carts_orders,
            o_new.orders_id                                        AS cart_items_id,
            o_new.orders_id                                        AS cart_id,
@@ -477,11 +480,7 @@ SELECT 'orders'                                                   AS carts_order
                case
                    when tsd_order.utm_source in
                         ('fb', 'vk', 'dzen', 'tiktok', 'facebook', 'mt', 'fb_wh', 'twitter', 'vc', 'linkedin',
-                         'mytarget', 'instagram','vkontakte','vkads')   or 
-                        ((tsd_order.utm_campaign='brand_all_bou_tg_target_db_chatbot' or
-                          tsd_order.utm_campaign='brand_all_bou_tg_target_db_chatbot_atlas')
-                         and tsd_order.utm_source = 'tg')
-                   then 'cpc_target'
+                         'mytarget', 'instagram','vkontakte','vkads') then 'cpc_target'
                    else 'cpc_context' end
            else tsd_order.channel end                                       AS "channel",
            tsd_order.utm_campaign                                 AS "utm_campaign",
@@ -501,8 +500,6 @@ SELECT 'orders'                                                   AS carts_order
       AND o_new.orders_in_profession = 0             -- не аккредитации в рамках профессии
       AND o.archive = 0 -- не архивные
       AND o_new.orders_id not in (select order_id from netology_mysql.order_to_carts) -- искл orders которые мигрировали в систему carts
-UNSEGMENTED ALL NODES;
-SELECT ANALYZE_STATISTICS ('temp_orders')
 ;
 """
 
@@ -545,7 +542,7 @@ SQL = """
        c.utm_content,
        c.utm_term,
        c.referrer
-FROM temp_carts_real_sales c
+FROM netology_temp.temp_carts_real_sales c
 UNION ALL
 SELECT o.carts_orders,
        o.cart_items_id,
@@ -585,8 +582,7 @@ SELECT o.carts_orders,
        o.utm_content,
        o.utm_term,
        o.referrer
-FROM temp_orders o
-;
+FROM netology_temp.temp_orders o;
 """
 
 SQL_D = """
@@ -596,6 +592,8 @@ DROP TABLE IF EXISTS temp_carts_0_tr;
 DROP TABLE IF EXISTS temp_carts;
 DROP TABLE IF EXISTS temp_orders;
 DROP TABLE IF EXISTS temp_carts_real_sales;
+DROP TABLE IF EXISTS netology_temp.temp_orders;
+DROP TABLE IF EXISTS netology_temp.temp_carts_real_sales;
 """
 
 def run():
@@ -614,20 +612,38 @@ def run():
         )
         cursor.execute(SQL_D)
         for i in (SQL_C1, SQL_C2, SQL_C3, SQL_C4, SQL_C5, SQL_C5_1, SQL_C6, SQL_C7, SQL_C8):
+            cursor = v_connector.cnx.cursor()
             logging.info(i)
             cursor.execute(i)
+            # v_connector.exec_multiple_sql(i.split(';'))
+
+        df_check = pd.read_sql(f"select count(*) from netology_temp.temp_carts_real_sales", v_connector.cnx)
+        print(f'temp_carts_real_sales: {df_check.iloc[0][0]}')
+
+        df_check = pd.read_sql(f"select count(*) from netology_temp.temp_orders", v_connector.cnx)
+        print(f'temp_orders: {df_check.iloc[0][0]}')
 
         sql = "INSERT INTO {staging_schema}.{table_name} ".format(staging_schema=STAGING_SCHEMA,
                                                                   table_name=TABLE_NAME) + SQL
         logging.info(sql)
+        cursor = v_connector.cnx.cursor()
         cursor.execute(sql)
+
+        df_check = pd.read_sql(f"select count(*) from {STAGING_SCHEMA}.{TABLE_NAME}", v_connector.cnx)
+        print(df_check.iloc[0][0])
+
         v_connector.reload_main_table(
             table_name=TABLE_NAME,
             schema=SCHEMA,
             staging_schema=STAGING_SCHEMA
         )
 
+        df_check = pd.read_sql(f"select count(*) from {SCHEMA}.{TABLE_NAME}", v_connector.cnx)
+        print(df_check.iloc[0][0])
+
+        cursor = v_connector.cnx.cursor()
         cursor.execute(SQL_D)
+        # v_connector.exec_multiple_sql(SQL_D.split(';'))
 
 
 if __name__ == "__main__":
