@@ -1,0 +1,87 @@
+/*
+Написать SELECT-запросы, которые выведут информацию согласно инструкциям ниже.
+
+Внимание: результаты запросов не должны быть пустыми, при необходимости добавьте данные в таблицы.
+
+Количество исполнителей в каждом жанре.
+Количество треков, вошедших в альбомы 2019–2020 годов.
+Средняя продолжительность треков по каждому альбому.
+Все исполнители, которые не выпустили альбомы в 2020 году.
+Названия сборников, в которых присутствует конкретный исполнитель (выберите его сами).
+Названия альбомов, в которых присутствуют исполнители более чем одного жанра.
+Наименования треков, которые не входят в сборники.
+Исполнитель или исполнители, написавшие самый короткий по продолжительности трек, 
+— теоретически таких треков может быть несколько.
+Названия альбомов, содержащих наименьшее количество треков.
+
+*/
+
+--Количество исполнителей в каждом жанре.
+select g.genre_name , count(ga.artist_id)
+from genres g 
+left join genres_artists ga on g.id = ga.genre_id 
+group by 1;
+
+--Количество треков, вошедших в альбомы 2019–2020 годов.
+select count(track_id)
+from track t 
+join album a on t.album_id = a.id 
+where date_part('year', created_at) between 2019 and 2020;
+
+--Средняя продолжительность треков по каждому альбому.
+select a."name"  , avg(length)
+from track t 
+join album a on t.album_id = a.id 
+group by a."name"  ;
+
+--Все исполнители, которые не выпустили альбомы в 2020 году.
+select a.pseudo_name 
+from artists a 
+join artists_albums aa on a.id = aa.artist_id 
+left join album a2 on a2.id = aa.album_id and date_part('year', a2.created_at) = 2020
+where a2.created_at is null;
+
+--Названия сборников, в которых присутствует конкретный исполнитель (выберите его сами).
+select c."name" 
+from collection c 
+join collection_tracks ct on c.id = ct.collection_id 
+join track t on t.track_id = ct.track_id 
+join artists_albums aa on aa.album_id = t.album_id 
+join artists a on a.id = aa.artist_id 
+where a.pseudo_name = 'Eminem'
+group by 1;
+
+--Названия альбомов, в которых присутствуют исполнители более чем одного жанра.
+select a."name"  
+from album a 
+join artists_albums aa on a.id = aa.album_id 
+join genres_artists ga on aa.artist_id = ga.artist_id 
+group by a."name" 
+having count(genre_id) > 1;
+
+--Наименования треков, которые не входят в сборники.
+select t."name" 
+from collection c 
+join collection_tracks ct on c.id = ct.collection_id 
+full join track t on t.track_id = ct.track_id 
+where c."name" is null;
+
+--Исполнитель или исполнители, написавшие самый короткий по продолжительности трек, — теоретически таких треков 
+--может быть несколько.
+
+select a.pseudo_name 
+from track t
+left join artists_albums aa on t.album_id = aa.album_id 
+join artists a on a.id = aa.artist_id 
+where "length" = (select min("length") from track t );
+
+--Названия альбомов, содержащих наименьшее количество треков.
+with album_track_count as (
+select album_id, count(track_id) track_counter
+from track t 
+group by album_id 
+)
+select a."name" 
+from album_track_count atc
+join album a on a.id = atc.album_id
+where track_counter = (select min(track_counter) from album_track_count);
