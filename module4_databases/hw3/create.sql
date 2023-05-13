@@ -88,25 +88,3 @@ create table if not exists collection_tracks
 	track_id  int references track(track_id),
 	primary key(collection_id, track_id)
 );
-
-
-
-/*
-Спроектировать отношение или схему из нескольких отношений «Сотрудник». У каждого сотрудника есть следующие параметры:
-
-Имя.
-Отдел.
-Начальник (ссылка на начальника).
-Примечание: начальник — тоже сотрудник. Отдел можно хранить строкой, можно идентификатором — не принципиально.
-
-Необходимо написать SQL-запрос, создающий таблицу «Сотрудник», и прислать ссылку на файл с этим запросом.
- */
-
-drop table if exists employee;
-create table if not exists employee
-( 
-	employee_id serial primary key,
-	"name" varchar(100) ,
-	department varchar(100),
-	boss_id  int references employee(employee_id)
-);
