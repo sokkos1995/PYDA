@@ -42,15 +42,13 @@ def merge_contacts(contacts_list):
             
         else:
             fix_row = contacts_list[surnames[row[0]]]
-            print(fix_row)
-            print(row)
             for i in range(1,7):
                 fix_row[i] = fix_row[i] or row[i]
 
     for index in surnames.values():
         fixed_list.append(contacts_list[index])
 
-    return(fixed_list)
+    return fixed_list
     
 
 
